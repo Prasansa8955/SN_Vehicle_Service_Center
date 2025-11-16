@@ -3,8 +3,12 @@ import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.sql.*;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.Collections;
+import java.util.Comparator;
 
 public class BillingPage extends JFrame {
 
@@ -21,7 +25,6 @@ public class BillingPage extends JFrame {
         setSize(950, 600);
         setLocationRelativeTo(null);
 
-        
         JLabel background = new JLabel(new ImageIcon("src/images/oo.jpg"));
         background.setLayout(null);
         setContentPane(background);
@@ -80,7 +83,7 @@ public class BillingPage extends JFrame {
         });
     }
 
-    // Load promotion in mysql
+    // Load promotion in MySQL
     private void loadPromotions() {
         promotions.clear();
         try (Connection conn = DBConnection.getConnection()) {
@@ -101,23 +104,23 @@ public class BillingPage extends JFrame {
         }
     }
 
-    // Get discount 
+    // Get discount using hashmap-like lookup
     private double getDiscountPercent(String serviceType, String priority) {
+        Map<String, Double> promoMap = new HashMap<>();
         for (Promo promo : promotions) {
-            if (promo.serviceType.equalsIgnoreCase(serviceType) &&
-                promo.priority.equalsIgnoreCase(priority)) {
-                return promo.value;
-            }
+            String key = promo.serviceType.toLowerCase() + "-" + promo.priority.toUpperCase();
+            promoMap.put(key, promo.value);
         }
-        return 0.0;
+        String lookupKey = serviceType.toLowerCase() + "-" + priority.toUpperCase();
+        return promoMap.getOrDefault(lookupKey, 0.0);
     }
 
-   
+    // Generate bills
     private void generateAllBills() {
         tableModel.setRowCount(0); 
+        List<BillRow> billRows = new ArrayList<>();
 
         try (Connection conn = DBConnection.getConnection()) {
-           
             String query = "SELECT vehicle_id, customer_name, vehicle_number, vehicle_type, vehicle_model, " +
                     "service_type, priority, cost, service_status, IFNULL(bill_generated,0) as bill_generated " +
                     "FROM customer_vehicle";
@@ -136,39 +139,39 @@ public class BillingPage extends JFrame {
                 String status = rs.getString("service_status");
                 int billGeneratedFlag = rs.getInt("bill_generated");
 
-               
-                double baseCost = storedCost;
-                if (baseCost <= 0) {
-                    baseCost = calculateServiceCost(serviceType, vType, vModel, priority);
-                }
+                double baseCost = storedCost > 0 ? storedCost : calculateServiceCost(serviceType, vType, vModel, priority);
 
-                // Apply promotion
                 double discountPercent = getDiscountPercent(serviceType, priority);
                 double discountAmount = baseCost * discountPercent / 100.0;
-                double finalCost = baseCost - discountAmount;
-                if (finalCost < 0) finalCost = 0;
+                double finalCost = Math.max(baseCost - discountAmount, 0);
 
-               
                 if (billGeneratedFlag == 0) {
                     try {
                         String updateSQL = "UPDATE customer_vehicle SET cost = ?, service_date = NOW(), bill_generated = 1 WHERE vehicle_id = ?";
                         PreparedStatement updatePst = conn.prepareStatement(updateSQL);
-                        updatePst.setDouble(1, finalCost); // store final cost
+                        updatePst.setDouble(1, finalCost);
                         updatePst.setString(2, vID);
                         updatePst.executeUpdate();
                     } catch (SQLException ex) {
-                      
                         JOptionPane.showMessageDialog(this, "Error saving bill for " + vID + ": " + ex.getMessage());
                     }
                 }
 
-                // Add row to table 
+                billRows.add(new BillRow(name, vID, vNo, vType, vModel, serviceType, priority, baseCost, discountAmount, finalCost, status));
+            }
+
+            // Sort by priority (VIP > URGENT > NORMAL)
+            Collections.sort(billRows, Comparator.comparingInt(BillRow::priorityOrder));
+
+            // Add to table
+            for (BillRow row : billRows) {
                 tableModel.addRow(new Object[]{
-                        name, vID, vNo, vType, vModel, serviceType, priority,
-                        String.format("%.2f", baseCost),             
-                        String.format("%.2f", discountAmount),        
-                        String.format("%.2f", finalCost),            
-                        status
+                        row.customerName, row.vehicleId, row.vehicleNumber, row.vehicleType,
+                        row.model, row.serviceType, row.priority,
+                        String.format("%.2f", row.baseCost),
+                        String.format("%.2f", row.discountAmount),
+                        String.format("%.2f", row.finalCost),
+                        row.status
                 });
             }
 
@@ -178,7 +181,7 @@ public class BillingPage extends JFrame {
         }
     }
 
-    // Service cost cal
+    // Service cost calculation
     private double calculateServiceCost(String serviceType, String vehicleType, String model, String priority) {
         double baseCost;
         switch (serviceType == null ? "" : serviceType.toLowerCase()) {
@@ -189,21 +192,20 @@ public class BillingPage extends JFrame {
             case "brake": baseCost = 8000; break;
             default: baseCost = 4000; break;
         }
-
         if (vehicleType != null) {
-            if (vehicleType.equalsIgnoreCase("Car")) baseCost += 2000;
-            else if (vehicleType.equalsIgnoreCase("Van")) baseCost += 4000;
-            else if (vehicleType.equalsIgnoreCase("Bike")) baseCost -= 1000;
-            else if (vehicleType.equalsIgnoreCase("Bus")) baseCost += 5000;
-            else if (vehicleType.equalsIgnoreCase("Lorry")) baseCost += 6000;
+            switch (vehicleType.toLowerCase()) {
+                case "car": baseCost += 2000; break;
+                case "van": baseCost += 4000; break;
+                case "bike": baseCost -= 1000; break;
+                case "bus": baseCost += 5000; break;
+                case "lorry": baseCost += 6000; break;
+            }
         }
-
         if (model != null && model.toLowerCase().contains("hybrid")) baseCost += 3000;
         if (priority != null) {
             if (priority.equalsIgnoreCase("VIP")) baseCost += 5000;
             else if (priority.equalsIgnoreCase("Urgent")) baseCost += 2000;
         }
-
         return baseCost;
     }
 
@@ -222,6 +224,36 @@ public class BillingPage extends JFrame {
             this.serviceType = serviceType;
             this.priority = priority;
             this.value = value;
+        }
+    }
+
+    // Helper class to store row data for sorting
+    private static class BillRow {
+        String customerName, vehicleId, vehicleNumber, vehicleType, model, serviceType, priority, status;
+        double baseCost, discountAmount, finalCost;
+
+        public BillRow(String customerName, String vehicleId, String vehicleNumber, String vehicleType,
+                       String model, String serviceType, String priority, double baseCost, double discountAmount,
+                       double finalCost, String status) {
+            this.customerName = customerName;
+            this.vehicleId = vehicleId;
+            this.vehicleNumber = vehicleNumber;
+            this.vehicleType = vehicleType;
+            this.model = model;
+            this.serviceType = serviceType;
+            this.priority = priority;
+            this.baseCost = baseCost;
+            this.discountAmount = discountAmount;
+            this.finalCost = finalCost;
+            this.status = status;
+        }
+
+        public int priorityOrder() {
+            switch (priority.toUpperCase()) {
+                case "VIP": return 1;
+                case "URGENT": return 2;
+                default: return 3;
+            }
         }
     }
 }

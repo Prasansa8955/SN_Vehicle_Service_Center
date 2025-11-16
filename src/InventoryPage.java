@@ -4,6 +4,7 @@ import javax.swing.border.*;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.sql.*;
+import java.util.Stack;
 import java.util.UUID;
 
 public class InventoryPage extends JFrame {
@@ -13,6 +14,9 @@ public class InventoryPage extends JFrame {
     private DefaultTableModel tableModel;
     private String editingItemId = null;
 
+    // Stack for Undo functionality
+    private Stack<Runnable> undoStack = new Stack<>();
+
     public InventoryPage() {
         setTitle("Vehicle Service Center - Inventory");
         setSize(900, 600);
@@ -21,7 +25,7 @@ public class InventoryPage extends JFrame {
         setLayout(null);
 
         // Background
-        JLabel background = new JLabel(new ImageIcon("src/images/oo.jpg"));
+        JLabel background = new JLabel(new ImageIcon("src/images/bb.jpg"));
         background.setBounds(0, 0, 900, 600);
         background.setLayout(null);
         add(background);
@@ -77,6 +81,7 @@ public class InventoryPage extends JFrame {
         JButton btnEdit = createButton("Edit", new Color(255, 165, 0)); btnEdit.setBounds(710, 25, 80, 35); mainPanel.add(btnEdit);
         JButton btnDelete = createButton("Delete", new Color(220, 20, 60)); btnDelete.setBounds(710, 70, 80, 35); mainPanel.add(btnDelete);
         JButton btnClear = createButton("Clear", new Color(128, 0, 128)); btnClear.setBounds(600, 70, 100, 35); mainPanel.add(btnClear);
+        JButton btnUndo = createButton("Undo", new Color(255, 140, 0)); btnUndo.setBounds(710, 110, 80, 35); mainPanel.add(btnUndo);
         JButton btnBack = createButton("Back to Dashboard", new Color(70, 130, 180)); btnBack.setBounds(620, 510, 230, 40); background.add(btnBack);
 
         // Table
@@ -86,7 +91,7 @@ public class InventoryPage extends JFrame {
         table.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 13));
         table.getTableHeader().setBackground(new Color(0, 102, 204));
         table.getTableHeader().setForeground(Color.WHITE);
-        JScrollPane scrollPane = new JScrollPane(table); scrollPane.setBounds(20, 120, 780, 250); mainPanel.add(scrollPane);
+        JScrollPane scrollPane = new JScrollPane(table); scrollPane.setBounds(20, 150, 780, 220); mainPanel.add(scrollPane);
 
         // Button actions
         btnAdd.addActionListener(e -> addItem());
@@ -94,6 +99,10 @@ public class InventoryPage extends JFrame {
         btnDelete.addActionListener(e -> deleteItem());
         btnClear.addActionListener(e -> clearInputs());
         btnBack.addActionListener(e -> { new Dashboard().setVisible(true); dispose(); });
+        btnUndo.addActionListener(e -> {
+            if(!undoStack.isEmpty()) undoStack.pop().run();
+            else JOptionPane.showMessageDialog(this,"Nothing to undo");
+        });
 
         // Table click
         table.addMouseListener(new java.awt.event.MouseAdapter() {
@@ -145,6 +154,17 @@ public class InventoryPage extends JFrame {
             PreparedStatement pst = conn.prepareStatement(sql);
             pst.setString(1, id); pst.setString(2, name); pst.setInt(3, qty); pst.setDouble(4, price); pst.executeUpdate();
 
+            // Push undo action
+            undoStack.push(() -> {
+                try(Connection c = DBConnection.getConnection()){
+                    String del = "DELETE FROM inventory WHERE item_id=?";
+                    PreparedStatement pst2 = c.prepareStatement(del);
+                    pst2.setString(1, id);
+                    pst2.executeUpdate();
+                    loadInventoryFromDB();
+                } catch(Exception ex){}
+            });
+
             loadInventoryFromDB();
             clearInputs();
         } catch(Exception ex){ JOptionPane.showMessageDialog(this,"Error: "+ex.getMessage()); }
@@ -152,6 +172,11 @@ public class InventoryPage extends JFrame {
 
     private void editItem() {
         if(editingItemId == null){ JOptionPane.showMessageDialog(this,"Select an item to edit"); return; }
+        int row = table.getSelectedRow();
+        String prevName = table.getValueAt(row,1).toString();
+        int prevQty = Integer.parseInt(table.getValueAt(row,2).toString());
+        double prevPrice = Double.parseDouble(table.getValueAt(row,3).toString());
+
         try(Connection conn = DBConnection.getConnection()){
             int qty = Integer.parseInt(txtQuantity.getText().trim());
             double price = Double.parseDouble(txtPrice.getText().trim());
@@ -162,6 +187,20 @@ public class InventoryPage extends JFrame {
             pst.setString(1, name); pst.setInt(2, qty); pst.setDouble(3, price); pst.setString(4, editingItemId);
             pst.executeUpdate();
 
+            // Push undo action
+            undoStack.push(() -> {
+                try(Connection c = DBConnection.getConnection()){
+                    String undoSQL = "UPDATE inventory SET item_name=?, quantity=?, price=? WHERE item_id=?";
+                    PreparedStatement pst2 = c.prepareStatement(undoSQL);
+                    pst2.setString(1, prevName);
+                    pst2.setInt(2, prevQty);
+                    pst2.setDouble(3, prevPrice);
+                    pst2.setString(4, editingItemId);
+                    pst2.executeUpdate();
+                    loadInventoryFromDB();
+                } catch(Exception ex){}
+            });
+
             loadInventoryFromDB();
             clearInputs();
             editingItemId = null;
@@ -170,10 +209,29 @@ public class InventoryPage extends JFrame {
 
     private void deleteItem() {
         if(editingItemId == null){ JOptionPane.showMessageDialog(this,"Select an item to delete"); return; }
+        int row = table.getSelectedRow();
+        String delName = table.getValueAt(row,1).toString();
+        int delQty = Integer.parseInt(table.getValueAt(row,2).toString());
+        double delPrice = Double.parseDouble(table.getValueAt(row,3).toString());
+
         try(Connection conn = DBConnection.getConnection()){
             String sql = "DELETE FROM inventory WHERE item_id=?";
             PreparedStatement pst = conn.prepareStatement(sql);
             pst.setString(1, editingItemId); pst.executeUpdate();
+
+            // Push undo action
+            undoStack.push(() -> {
+                try(Connection c = DBConnection.getConnection()){
+                    String insertSQL = "INSERT INTO inventory(item_id, item_name, quantity, price) VALUES(?,?,?,?)";
+                    PreparedStatement pst2 = c.prepareStatement(insertSQL);
+                    pst2.setString(1, editingItemId);
+                    pst2.setString(2, delName);
+                    pst2.setInt(3, delQty);
+                    pst2.setDouble(4, delPrice);
+                    pst2.executeUpdate();
+                    loadInventoryFromDB();
+                } catch(Exception ex){}
+            });
 
             loadInventoryFromDB();
             clearInputs();

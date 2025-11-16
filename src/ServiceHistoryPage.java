@@ -3,17 +3,19 @@ import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.sql.*;
+import java.util.HashMap;
+import java.util.Map;
 
 public class ServiceHistoryPage extends JFrame {
 
     private JTable table;
     private DefaultTableModel tableModel;
-    private JLabel lblTotalIncome, lblTotalVehicles;
+    private JLabel lblTotalIncome, lblTotalVehicles, lblTopVehicle, lblTopCustomer;
     private JButton btnBack;
 
     public ServiceHistoryPage() {
         setTitle("SL Vehicle Service Center - Service History");
-        setSize(900, 600);
+        setSize(900, 650); // slightly bigger for extra labels
         setLocationRelativeTo(null);
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setLayout(null);
@@ -46,8 +48,18 @@ public class ServiceHistoryPage extends JFrame {
         lblTotalVehicles.setBounds(320, 480, 200, 30);
         add(lblTotalVehicles);
 
+        lblTopVehicle = new JLabel("Most Serviced Vehicle Type: N/A");
+        lblTopVehicle.setFont(new Font("Segoe UI", Font.BOLD, 16));
+        lblTopVehicle.setBounds(50, 510, 400, 30);
+        add(lblTopVehicle);
+
+        lblTopCustomer = new JLabel("Top Customer: N/A");
+        lblTopCustomer.setFont(new Font("Segoe UI", Font.BOLD, 16));
+        lblTopCustomer.setBounds(50, 540, 400, 30);
+        add(lblTopCustomer);
+
         btnBack = new JButton("Back");
-        btnBack.setBounds(750, 500, 100, 35);
+        btnBack.setBounds(750, 570, 100, 35);
         btnBack.setBackground(new Color(128, 0, 128));
         btnBack.setForeground(Color.WHITE);
         btnBack.setFont(new Font("Segoe UI", Font.BOLD, 14));
@@ -66,8 +78,11 @@ public class ServiceHistoryPage extends JFrame {
         double totalIncome = 0;
         int totalVehicles = 0;
 
+        // Maps for algorithms
+        Map<String, Integer> vehicleCountMap = new HashMap<>();
+        Map<String, Integer> customerCountMap = new HashMap<>();
+
         try (Connection conn = DBConnection.getConnection()) {
-            // Read from customer
             String sql = "SELECT vehicle_id, customer_name, vehicle_number, vehicle_model, " +
                          "vehicle_type, service_type, service_date, cost " +
                          "FROM customer_vehicle " +
@@ -87,12 +102,35 @@ public class ServiceHistoryPage extends JFrame {
                 double cost = rs.getDouble("cost");
 
                 tableModel.addRow(new Object[]{vID, customer, vNo, model, vType, service, date, String.format("%.2f", cost)});
+                
+                // Update totals
                 totalIncome += cost;
                 totalVehicles++;
+
+                // Algorithm 1: Most serviced vehicle type
+                vehicleCountMap.put(vType, vehicleCountMap.getOrDefault(vType, 0) + 1);
+
+                // Algorithm 2: Top customer
+                customerCountMap.put(customer, customerCountMap.getOrDefault(customer, 0) + 1);
             }
 
+            // Update labels
             lblTotalIncome.setText("Total Income: Rs. " + String.format("%.2f", totalIncome));
             lblTotalVehicles.setText("Total Vehicles: " + totalVehicles);
+
+            // Find most serviced vehicle type
+            String topVehicle = vehicleCountMap.entrySet().stream()
+                    .max(Map.Entry.comparingByValue())
+                    .map(Map.Entry::getKey)
+                    .orElse("N/A");
+            lblTopVehicle.setText("Most Serviced Vehicle Type: " + topVehicle);
+
+            // Find top customer
+            String topCustomer = customerCountMap.entrySet().stream()
+                    .max(Map.Entry.comparingByValue())
+                    .map(Map.Entry::getKey)
+                    .orElse("N/A");
+            lblTopCustomer.setText("Top Customer: " + topCustomer);
 
         } catch (SQLException ex) {
             JOptionPane.showMessageDialog(this, "DB Error: " + ex.getMessage());
